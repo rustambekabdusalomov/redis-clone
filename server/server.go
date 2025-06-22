@@ -78,6 +78,10 @@ func (s *Server) executeCommand(cmd string, args []string) string {
 		return fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)
 
 	case "DEL":
+		if len(args) < 1 {
+			return "-ERR wrong number of arguments for 'del'\r\n"
+		}
+
 		count := s.store.Del(args...)
 		return fmt.Sprintf(":%d\r\n", count)
 
@@ -297,6 +301,52 @@ func (s *Server) executeCommand(cmd string, args []string) string {
 			return "-ERR " + err.Error() + "\r\n"
 		}
 		return fmt.Sprintf(":%d\r\n", n)
+
+	case "TYPE":
+		if len(args) != 1 {
+			return "-ERR wrong number of arguments for 'type'\r\n"
+		}
+		t := s.store.Type(args[0])
+		return fmt.Sprintf("+%s\r\n", t)
+
+	case "KEYS":
+		if len(args) != 1 {
+			return "-ERR wrong number of arguments for 'keys'\r\n"
+		}
+		keys := s.store.Keys(args[0])
+		resp := fmt.Sprintf("*%d\r\n", len(keys))
+		for _, k := range keys {
+			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(k), k)
+		}
+		return resp
+
+	case "FLUSHALL":
+		s.store.FlushAll()
+		return "+OK\r\n"
+
+	case "RENAME":
+		if len(args) != 2 {
+			return "-ERR wrong number of arguments for 'rename'\r\n"
+		}
+		err := s.store.Rename(args[0], args[1])
+		if err != nil {
+			return "-ERR " + err.Error() + "\r\n"
+		}
+		return "+OK\r\n"
+
+	case "MOVE":
+		if len(args) != 2 {
+			return "-ERR wrong number of arguments for 'move'\r\n"
+		}
+		dbIndex, err := strconv.Atoi(args[1])
+		if err != nil {
+			return "-ERR invalid DB index\r\n"
+		}
+		err = s.store.Move(args[0], dbIndex)
+		if err != nil {
+			return "-ERR " + err.Error() + "\r\n"
+		}
+		return ":1\r\n"
 
 	default:
 		return "-ERR unknown command\r\n"

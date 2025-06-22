@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 	"log"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,14 +63,13 @@ func (s *MemoryStore) Del(keys ...string) int {
 	for _, key := range keys {
 		if _, ok := s.data[key]; ok {
 			delete(s.data, key)
+			delete(s.expiration, key)
 			count++
+
+			if s.aof != nil && count > 0 {
+				s.aof.AppendCommand("DEL", key)
+			}
 		}
-
-		delete(s.expiration, key)
-	}
-
-	if s.aof != nil && count > 0 {
-		s.aof.AppendCommand("DEL", keys...)
 	}
 
 	return count
@@ -122,6 +122,92 @@ func (s *MemoryStore) Incr(key string) (int64, error) {
 	return 1, nil
 }
 
+func (s *MemoryStore) Type(key string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	val, exists := s.data[key]
+	if !exists {
+		return "none"
+	}
+
+	switch val.(type) {
+	case string:
+		return "string"
+	case []string:
+		return "list"
+	case map[string]string:
+		return "hash"
+	case map[string]bool:
+		return "set"
+	default:
+		return "unknown"
+	}
+}
+
+func (s *MemoryStore) Keys(pattern string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	keys := make([]string, 0)
+	for k := range s.data {
+		match, err := path.Match(pattern, k)
+		if err != nil {
+			continue
+		}
+		if match {
+			keys = append(keys, k)
+		}
+	}
+
+	return keys
+}
+
+func (s *MemoryStore) FlushAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.data = make(map[string]interface{})
+	s.expiration = make(map[string]int64)
+
+	if s.aof != nil {
+		s.aof.AppendCommand("FLUSHALL")
+	}
+}
+
+func (s *MemoryStore) Rename(oldKey, newKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	val, ok := s.data[oldKey]
+	if !ok {
+		return fmt.Errorf("no such key")
+	}
+	s.data[newKey] = val
+	delete(s.data, oldKey)
+
+	if s.aof != nil {
+		s.aof.AppendCommand("RENAME", oldKey, newKey)
+	}
+
+	return nil
+}
+
+func (s *MemoryStore) Move(key string, db int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.data[key]; !ok {
+		return fmt.Errorf("key not found")
+	}
+
+	if db != 0 {
+		return fmt.Errorf("only one DB implemented")
+	}
+
+	return nil
+}
+
 func (s *MemoryStore) SaveSnapshot(path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -165,6 +251,9 @@ func (s *MemoryStore) ExecuteRaw(cmd string, args []string) string {
 		return fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)
 
 	case "DEL":
+		if len(args) < 1 {
+			return "-ERR wrong number of arguments for 'del'\r\n"
+		}
 		count := s.Del(args...)
 		return fmt.Sprintf(":%d\r\n", count)
 
@@ -384,6 +473,52 @@ func (s *MemoryStore) ExecuteRaw(cmd string, args []string) string {
 			return "-ERR " + err.Error() + "\r\n"
 		}
 		return fmt.Sprintf(":%d\r\n", n)
+
+	case "TYPE":
+		if len(args) != 1 {
+			return "-ERR wrong number of arguments for 'type'\r\n"
+		}
+		t := s.Type(args[0])
+		return fmt.Sprintf("+%s\r\n", t)
+
+	case "KEYS":
+		if len(args) != 1 {
+			return "-ERR wrong number of arguments for 'keys'\r\n"
+		}
+		keys := s.Keys(args[0])
+		resp := fmt.Sprintf("*%d\r\n", len(keys))
+		for _, k := range keys {
+			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(k), k)
+		}
+		return resp
+
+	case "FLUSHALL":
+		s.FlushAll()
+		return "+OK\r\n"
+
+	case "RENAME":
+		if len(args) != 2 {
+			return "-ERR wrong number of arguments for 'rename'\r\n"
+		}
+		err := s.Rename(args[0], args[1])
+		if err != nil {
+			return "-ERR " + err.Error() + "\r\n"
+		}
+		return "+OK\r\n"
+
+	case "MOVE":
+		if len(args) != 2 {
+			return "-ERR wrong number of arguments for 'move'\r\n"
+		}
+		dbIndex, err := strconv.Atoi(args[1])
+		if err != nil {
+			return "-ERR invalid DB index\r\n"
+		}
+		err = s.Move(args[0], dbIndex)
+		if err != nil {
+			return "-ERR " + err.Error() + "\r\n"
+		}
+		return ":1\r\n"
 
 	default:
 		return "-ERR unknown command\r\n"
