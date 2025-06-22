@@ -1,5 +1,7 @@
 package store
 
+import "strconv"
+
 func (s *MemoryStore) getHash(key string) (map[string]string, bool) {
 	val, ok := s.data[key]
 	if !ok {
@@ -104,4 +106,26 @@ func (s *MemoryStore) HExists(key, field string) bool {
 
 	_, exists := hash[field]
 	return exists
+}
+
+func (s *MemoryStore) HIncrBy(key, field string, increment int64) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	hash, ok := s.getHash(key)
+	if !ok {
+		hash = make(map[string]string)
+	}
+	oldStr := hash[field]
+	oldVal, _ := strconv.ParseInt(oldStr, 10, 64)
+	newVal := oldVal + increment
+
+	hash[field] = strconv.FormatInt(newVal, 10)
+	s.data[key] = hash
+
+	if s.aof != nil {
+		s.aof.AppendCommand("HINCRBY", key, field, strconv.FormatInt(increment, 10))
+	}
+
+	return newVal, nil
 }

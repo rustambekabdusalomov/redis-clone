@@ -90,6 +90,38 @@ func (s *MemoryStore) Exists(keys ...string) int {
 	return count
 }
 
+func (s *MemoryStore) Incr(key string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	val, exists := s.data[key]
+	if exists {
+		strVal, ok := val.(string)
+		if !ok {
+			return 0, fmt.Errorf("wrong type")
+		}
+		n, err := strconv.ParseInt(strVal, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("value is not an integer")
+		}
+		n++
+		s.data[key] = strconv.FormatInt(n, 10)
+		if s.aof != nil {
+			s.aof.AppendCommand("INCR", key)
+		}
+
+		return n, nil
+	}
+
+	// If not exists set to 1
+	s.data[key] = "1"
+	if s.aof != nil {
+		s.aof.AppendCommand("INCR", key)
+	}
+
+	return 1, nil
+}
+
 func (s *MemoryStore) SaveSnapshot(path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -328,6 +360,30 @@ func (s *MemoryStore) ExecuteRaw(cmd string, args []string) string {
 			return "-ERR failed to save snapshot\r\n"
 		}
 		return "+OK\r\n"
+
+	case "INCR":
+		if len(args) != 1 {
+			return "-ERR wrong number of arguments for 'incr'\r\n"
+		}
+		n, err := s.Incr(args[0])
+		if err != nil {
+			return "-ERR " + err.Error() + "\r\n"
+		}
+		return fmt.Sprintf(":%d\r\n", n)
+
+	case "HINCRBY":
+		if len(args) != 3 {
+			return "-ERR wrong number of arguments for 'hincrby'\r\n"
+		}
+		incr, err := strconv.ParseInt(args[2], 10, 64)
+		if err != nil {
+			return "-ERR increment must be integer\r\n"
+		}
+		n, err := s.HIncrBy(args[0], args[1], incr)
+		if err != nil {
+			return "-ERR " + err.Error() + "\r\n"
+		}
+		return fmt.Sprintf(":%d\r\n", n)
 
 	default:
 		return "-ERR unknown command\r\n"

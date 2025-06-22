@@ -274,6 +274,30 @@ func (s *Server) executeCommand(cmd string, args []string) string {
 		}
 		return "+OK\r\n"
 
+	case "INCR":
+		if len(args) != 1 {
+			return "-ERR wrong number of arguments for 'incr'\r\n"
+		}
+		n, err := s.store.Incr(args[0])
+		if err != nil {
+			return "-ERR " + err.Error() + "\r\n"
+		}
+		return fmt.Sprintf(":%d\r\n", n)
+
+	case "HINCRBY":
+		if len(args) != 3 {
+			return "-ERR wrong number of arguments for 'hincrby'\r\n"
+		}
+		incr, err := strconv.ParseInt(args[2], 10, 64)
+		if err != nil {
+			return "-ERR increment must be integer\r\n"
+		}
+		n, err := s.store.HIncrBy(args[0], args[1], incr)
+		if err != nil {
+			return "-ERR " + err.Error() + "\r\n"
+		}
+		return fmt.Sprintf(":%d\r\n", n)
+
 	default:
 		return "-ERR unknown command\r\n"
 	}

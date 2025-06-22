@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/gob"
 	"log"
 	"time"
 
@@ -8,6 +9,14 @@ import (
 	"redis-clone/server"
 	"redis-clone/store"
 )
+
+func init() {
+	// Register all possible value types stored in MemoryStore
+	gob.Register("")                  // string values
+	gob.Register([]string{})          // list values
+	gob.Register(map[string]string{}) // hash values
+	gob.Register(map[string]bool{})   // set values
+}
 
 func main() {
 	// === Load AOF (Append Only File) ===
