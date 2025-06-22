@@ -1,0 +1,288 @@
+package server
+
+import (
+	"bufio"
+	"fmt"
+	"log"
+	"net"
+	"strconv"
+	"strings"
+
+	"redis-clone/resp"
+	"redis-clone/store"
+)
+
+type Server struct {
+	addr  string
+	store *store.MemoryStore
+}
+
+func New(addr string) *Server {
+	return &Server{
+		addr: addr,
+	}
+}
+
+func (s *Server) ListenAndServe() error {
+	ln, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return err
+		}
+		go s.handleConnection(conn)
+	}
+}
+
+func (s *Server) handleConnection(conn net.Conn) {
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+
+	for {
+		cmd, args, err := resp.Parse(reader)
+		if err != nil {
+			conn.Write([]byte("-ERR invalid command\r\n"))
+			return
+		}
+
+		resp := s.executeCommand(cmd, args)
+		conn.Write([]byte(resp))
+	}
+}
+
+func (s *Server) executeCommand(cmd string, args []string) string {
+	switch strings.ToUpper(cmd) {
+	case "PING":
+		return "+PONG\r\n"
+
+	case "SET":
+		if len(args) < 2 {
+			return "-ERR wrong number of arguments for 'set'\r\n"
+		}
+		s.store.Set(args[0], args[1])
+		return "+OK\r\n"
+
+	case "GET":
+		if len(args) != 1 {
+			return "-ERR wrong number of arguments for 'get'\r\n"
+		}
+		val, ok := s.store.Get(args[0])
+		if !ok {
+			return "$-1\r\n"
+		}
+		return fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)
+
+	case "DEL":
+		count := s.store.Del(args...)
+		return fmt.Sprintf(":%d\r\n", count)
+
+	case "EXISTS":
+		count := s.store.Exists(args...)
+		return fmt.Sprintf(":%d\r\n", count)
+
+	case "LPUSH":
+		if len(args) < 2 {
+			return "-ERR wrong number of arguments for 'lpush'\r\n"
+		}
+		count := s.store.LPush(args[0], args[1:]...)
+		return fmt.Sprintf(":%d\r\n", count)
+
+	case "RPUSH":
+		if len(args) < 2 {
+			return "-ERR wrong number of arguments for 'rpush'\r\n"
+		}
+		count := s.store.RPush(args[0], args[1:]...)
+		return fmt.Sprintf(":%d\r\n", count)
+
+	case "LPOP":
+		if len(args) < 1 {
+			return "-ERR wrong number of arguments for 'lpop'\r\n"
+		}
+		val, err := s.store.LPop(args[0])
+		if err != nil {
+			return "$-1\r\n"
+		}
+		return fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)
+
+	case "RPOP":
+		if len(args) < 1 {
+			return "-ERR wrong number of arguments for 'rpop'\r\n"
+		}
+		val, err := s.store.RPop(args[0])
+		if err != nil {
+			return "$-1\r\n"
+		}
+		return fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)
+
+	case "LRANGE":
+		if len(args) != 3 {
+			return "-ERR wrong number of arguments for 'lrange'\r\n"
+		}
+		start, err1 := strconv.Atoi(args[1])
+		stop, err2 := strconv.Atoi(args[2])
+		if err1 != nil || err2 != nil {
+			return "-ERR start and stop must be integers\r\n"
+		}
+
+		items, err := s.store.LRange(args[0], start, stop)
+		if err != nil {
+			return "-ERR" + err.Error() + "\r\n"
+		}
+
+		resp := fmt.Sprintf("*%d\r\n", len(items))
+		for _, item := range items {
+			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(item), item)
+		}
+		return resp
+
+	case "SADD":
+		if len(args) < 2 {
+			return "-ERR wrong number of arguments for 'sadd'\r\n"
+		}
+
+		count := s.store.SAdd(args[0], args[1:]...)
+		return fmt.Sprintf(":%d\r\n", count)
+
+	case "SREM":
+		if len(args) < 2 {
+			return "-ERR wrong number of arguments for 'srem'\r\n"
+		}
+
+		count := s.store.SRem(args[0], args[1:]...)
+		return fmt.Sprintf(":%d\r\n", count)
+
+	case "SISMEMBER":
+		if len(args) != 2 {
+			return "-ERR wrong number of arguments for 'sismember'\r\n"
+		}
+		if s.store.SIsMember(args[0], args[1]) {
+			return ":1\r\n"
+		}
+		return ":0\r\n"
+
+	case "SMEMBERS":
+		if len(args) != 1 {
+			return "-ERR wrong number of arguments for 'smembers'\r\n"
+		}
+		members, ok := s.store.SMembers(args[0])
+		if !ok {
+			return "*0\r\n"
+		}
+		resp := fmt.Sprintf("*%d\r\n", len(members))
+		for _, m := range members {
+			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(m), m)
+		}
+		return resp
+
+	case "SCARD":
+		if len(args) != 1 {
+			return "-ERR wrong number of arguemnts for 'scard'\r\n"
+		}
+		count := s.store.SCard(args[0])
+		return fmt.Sprintf(":%d\r\n", count)
+
+	case "SUNION":
+		if len(args) < 1 {
+			return "-ERR wrong number of arguments for 'sunion'\r\n"
+		}
+		union := s.store.SUnion(args...)
+		resp := fmt.Sprintf("*%d\r\n", len(union))
+		for _, m := range union {
+			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(m), m)
+		}
+		return resp
+
+	case "HSET":
+		if len(args) != 3 {
+			return "-ERR wrong number of arguments for 'hset'\r\n"
+		}
+		added := s.store.HSet(args[0], args[1], args[2])
+		return fmt.Sprintf(":%d\r\n", added)
+
+	case "HGET":
+		if len(args) != 2 {
+			return "-ERR wrong number of arguments for 'hget'\r\n"
+		}
+		val, ok := s.store.HGet(args[0], args[1])
+		if !ok {
+			return "$-1\r\n"
+		}
+		return fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)
+
+	case "HGETALL":
+		if len(args) != 1 {
+			return "-ERR wrong number of arguments for 'hgetall'\r\n"
+		}
+		pairs, ok := s.store.HGetAll(args[0])
+		if !ok {
+			return "*0\r\n"
+		}
+		resp := fmt.Sprintf("*%d\r\n", len(pairs))
+		for _, v := range pairs {
+			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(v), v)
+		}
+		return resp
+
+	case "HDEL":
+		if len(args) < 2 {
+			return "-ERR wrong number of arguments for 'hdel'\r\n"
+		}
+		count := s.store.HDel(args[0], args[1:]...)
+		return fmt.Sprintf(":%d\r\n", count)
+
+	case "HEXISTS":
+		if len(args) != 2 {
+			return "-ERR wrong number of arguments for 'hexists'\r\n"
+		}
+		exists := s.store.HExists(args[0], args[1])
+		if exists {
+			return ":1\r\n"
+		}
+		return ":0\r\n"
+
+	case "EXPIRE":
+		if len(args) != 2 {
+			return "-ERR wrong number of arguments for 'expire'\r\n"
+		}
+		seconds, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || seconds < 0 {
+			return "-ERR invalid expire time\r\n"
+		}
+		ok := s.store.Expire(args[0], seconds)
+		if ok {
+			return ":1\r\n"
+		}
+		return ":0\r\n"
+
+	case "TTL":
+		if len(args) != 1 {
+			return "-ERR wrong number of arguments for 'ttl'\r\n"
+		}
+		ttl := s.store.TTL(args[0])
+		return fmt.Sprintf(":%d\r\n", ttl)
+
+	case "SAVE":
+		err := s.store.LoadSnapshot("dump.rdb")
+		if err != nil {
+			log.Println(err)
+			return "-ERR failed to save snapshot\r\n"
+		}
+		return "+OK\r\n"
+
+	default:
+		return "-ERR unknown command\r\n"
+	}
+}
+
+func (s *Server) Load(path string) error {
+	return s.store.LoadSnapshot(path)
+}
+
+func (s *Server) AttachStore(store *store.MemoryStore) {
+	s.store = store
+}
