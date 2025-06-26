@@ -15,17 +15,19 @@ import (
 type RedisValue interface{}
 
 type MemoryStore struct {
-	mu         sync.RWMutex
-	data       map[string]interface{}
-	expiration map[string]int64
-	aof        *persistance.AOF
+	mu          sync.RWMutex
+	data        map[string]interface{}
+	expiration  map[string]int64
+	aof         *persistance.AOF
+	subscribers map[string][]chan string
 }
 
 func NewMemoryStoreWithAOF(aof *persistance.AOF) *MemoryStore {
 	store := &MemoryStore{
-		data:       make(map[string]interface{}),
-		expiration: make(map[string]int64),
-		aof:        aof,
+		data:        make(map[string]interface{}),
+		expiration:  make(map[string]int64),
+		aof:         aof,
+		subscribers: make(map[string][]chan string),
 	}
 
 	go store.expiryDeamon()
@@ -206,6 +208,50 @@ func (s *MemoryStore) Move(key string, db int) error {
 	}
 
 	return nil
+}
+
+func (s *MemoryStore) Subscribe(channel string, ch chan string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subscribers[channel] = append(s.subscribers[channel], ch)
+}
+
+func (s *MemoryStore) Publish(channel, message string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sent := 0
+	for _, ch := range s.subscribers[channel] {
+		select {
+		case ch <- message:
+			sent++
+		default: // skip blocked channels
+		}
+	}
+
+	return sent
+}
+
+func (s *MemoryStore) Unsubscribe(channel string, client chan string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	listeners, ok := s.subscribers[channel]
+	if !ok {
+		return
+	}
+
+	newList := make([]chan string, 0, len(listeners))
+	for _, ch := range listeners {
+		if ch != client {
+			newList = append(newList, ch)
+		}
+	}
+	if (len(newList)) > 0 {
+		s.subscribers[channel] = newList
+	} else {
+		delete(s.subscribers, channel)
+	}
 }
 
 func (s *MemoryStore) SaveSnapshot(path string) error {

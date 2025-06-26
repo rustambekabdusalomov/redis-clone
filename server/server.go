@@ -43,19 +43,26 @@ func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 
+	subs := make(map[string]chan string)
+
 	for {
 		cmd, args, err := resp.Parse(reader)
 		if err != nil {
 			conn.Write([]byte("-ERR invalid command\r\n"))
-			return
+			continue
 		}
 
-		resp := s.executeCommand(cmd, args)
+		resp := s.executeCommand(cmd, args, conn, subs)
 		conn.Write([]byte(resp))
+	}
+
+	for chName, subCh := range subs {
+		s.store.Unsubscribe(chName, subCh)
+		close(subCh)
 	}
 }
 
-func (s *Server) executeCommand(cmd string, args []string) string {
+func (s *Server) executeCommand(cmd string, args []string, conn net.Conn, subs map[string]chan string) string {
 	switch strings.ToUpper(cmd) {
 	case "PING":
 		return "+PONG\r\n"
@@ -347,6 +354,50 @@ func (s *Server) executeCommand(cmd string, args []string) string {
 			return "-ERR " + err.Error() + "\r\n"
 		}
 		return ":1\r\n"
+
+	case "SUBSCRIBE":
+		if len(args) != 1 {
+			return "-ERR SUBSCRIBE requires a channel\r\n"
+		}
+
+		ch := make(chan string, 100)
+		s.store.Subscribe(args[0], ch)
+		// conn.Write([]byte(fmt.Sprintf("$9\r\nsubscribed\r\n$%d\r\n%s\r\n", len(args[0]), args[0])))
+
+		go func() {
+			for msg := range ch {
+				reply := fmt.Sprintf("*3\r\n$7\r\nmessage\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
+					len(args[0]), args[0], len(msg), msg)
+				conn.Write([]byte(reply))
+			}
+		}()
+		return "+OK\r\n" // no immediate reply, subscription is async
+
+	case "PUBLISH":
+		if len(args) != 2 {
+			return "-ERR PUBLISH requires channel and message\r\n"
+		}
+		count := s.store.Publish(args[0], args[1])
+		return fmt.Sprintf(":%d\r\n", count)
+
+	case "UNSUBSCRIBE":
+		if len(args) < 1 {
+			return "-ERR UNSUBSCRIBE requires at least one channel\r\n"
+		}
+
+		for _, chName := range args {
+			subCh, ok := subs[chName]
+			if ok {
+				s.store.Unsubscribe(chName, subCh)
+				close(subCh)
+				delete(subs, chName)
+
+				conn.Write([]byte(fmt.Sprintf("*2\r\n$11\r\nunsubscribed\r\n$%d\r\n%s\r\n", len(chName), chName)))
+			} else {
+				conn.Write([]byte(fmt.Sprintf("*2\r\n$11\r\nunsubscribed\r\n$%d\r\n%s\r\n", len(chName), chName)))
+			}
+		}
+		return ""
 
 	default:
 		return "-ERR unknown command\r\n"

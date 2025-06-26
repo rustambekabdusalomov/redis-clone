@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 
 	"redis-clone/resp"
 )
 
 type AOF struct {
 	file *os.File
+	mu   *sync.Mutex
 }
 
 func NewAOF(path string) (*AOF, error) {
@@ -20,10 +22,14 @@ func NewAOF(path string) (*AOF, error) {
 	}
 	return &AOF{
 		file: f,
+		mu:   &sync.Mutex{},
 	}, nil
 }
 
 func (a *AOF) AppendCommand(cmd string, args ...string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	// Format as RESP command
 	line := fmt.Sprintf("*%d\r\n", len(args)+1)
 	line += fmt.Sprintf("$%d\r\n%s\r\n", len(cmd), cmd)
