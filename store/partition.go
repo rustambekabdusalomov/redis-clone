@@ -129,3 +129,7 @@ func (pm *PartitionManager) Rename(oldKey, newKey string) error {
 
 	return nil
 }
+
+func (pm *PartitionManager) Move(key string, db int) error {
+	return pm.getParition(key).Move(key, db)
+}
