@@ -23,6 +23,12 @@ func New(addr string) *Server {
 	}
 }
 
+type Client struct {
+	conn       net.Conn
+	inTx       bool
+	queuedCmds [][]string
+}
+
 func (s *Server) ListenAndServe() error {
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
@@ -35,31 +41,33 @@ func (s *Server) ListenAndServe() error {
 		if err != nil {
 			return err
 		}
-		go s.handleConnection(conn)
+		go s.handleConnection(&Client{
+			conn: conn,
+		})
 	}
 }
 
-func (s *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
-	reader := bufio.NewReader(conn)
+func (s *Server) handleConnection(client *Client) {
+	defer client.conn.Close()
+	reader := bufio.NewReader(client.conn)
 
 	subs := make(map[string]chan string)
 
 	for {
 		cmd, args, err := resp.Parse(reader)
 		if err != nil {
-			conn.Write([]byte("-ERR invalid command\r\n"))
+			client.conn.Write([]byte("-ERR invalid command\r\n"))
 			continue
 		}
 
-		resp := s.executeCommand(cmd, args, conn, subs)
-		conn.Write([]byte(resp))
+		resp := s.executeCommand(cmd, args, client.conn, subs)
+		client.conn.Write([]byte(resp))
 	}
 
-	for chName, subCh := range subs {
-		s.store.Unsubscribe(chName, subCh)
-		close(subCh)
-	}
+	// for chName, subCh := range subs {
+	// 	s.store.Unsubscribe(chName, subCh)
+	// 	close(subCh)
+	// }
 }
 
 func (s *Server) executeCommand(cmd string, args []string, conn net.Conn, subs map[string]chan string) string {
